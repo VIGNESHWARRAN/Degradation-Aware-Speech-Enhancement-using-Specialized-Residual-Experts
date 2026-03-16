@@ -1,0 +1,9 @@
+torch>=2.0.0
+torchaudio>=2.0.0
+transformers>=4.35.0
+tensorboard>=2.13.0
+pyyaml>=6.0
+numpy>=1.24.0
+# Optional evaluation metrics (install for full metrics)
+pystoi>=0.3.3
+pesq>=0.0.4

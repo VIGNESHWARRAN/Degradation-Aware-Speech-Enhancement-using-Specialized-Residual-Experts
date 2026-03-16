@@ -1,0 +1,37 @@
+# config.yaml
+# -----------------------------------------------------------
+# Central configuration for Degradation-Aware Speech Enhancement
+# All values here are defaults; override in run_experiments.py
+# -----------------------------------------------------------
+
+# ── Data ────────────────────────────────────────────────────
+data_root  : "C:/Users/Sai Raman/OneDrive/Desktop/All Semesters/semester 6/Speech Recognition/final_processed/final_processed"
+output_dir : "outputs/experiment_01"
+
+# ── Model ───────────────────────────────────────────────────
+expert_dim        : 512   # internal channel width of each ResNet expert
+num_expert_blocks : 4     # ResidualBlock1D layers per expert
+decoder_dim       : 512   # internal width of the waveform decoder
+num_upsample      : 8     # ×2 upsample stages (total ×256)
+dropout           : 0.1
+unfreeze_top_n    : 4     # backbone transformer layers to unfreeze in Stage 2
+
+# ── Training ────────────────────────────────────────────────
+batch_size    : 8
+num_workers   : 0         # set to 0 on Windows if DataLoader hangs
+stage1_epochs : 20        # backbone frozen
+stage2_epochs : 20        # top-N backbone layers unfrozen
+stage1_lr     : 3.0e-4
+stage2_lr     : 5.0e-5
+warmup_ratio  : 0.05      # fraction of steps used for LR warmup
+grad_clip     : 1.0
+seed          : 42
+
+# ── Loss weights ────────────────────────────────────────────
+lambda_l1    : 0.5
+lambda_stft  : 1.0
+lambda_sisnr : 0.5
+
+# ── Logging ─────────────────────────────────────────────────
+log_interval : 50         # console log every N steps
+resume_from  : null       # path to checkpoint to resume from, or null

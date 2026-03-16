@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Architecture: Residual Expert Speech Enhancement</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-white: #ffffff;
+            --input-gray: #f1f3f4;
+            --backbone-blue: #e8f0fe;
+            --backbone-border: #1a73e8;
+            --router-yellow: #fef3c7;
+            --router-border: #f9ab00;
+            --expert-orange: #fff4e5;
+            --expert-border: #e8710a;
+            --decoder-teal: #e4f7fb;
+            --decoder-border: #12b5cb;
+            --output-green: #e6f4ea;
+            --output-border: #1e8e3e;
+            --text-main: #202124;
+            --text-sub: #5f6368;
+            --line-color: #bdc1c6;
+        }
+
+        body {
+            background-color: var(--bg-white);
+            color: var(--text-main);
+            font-family: 'Inter', sans-serif;
+            margin: 0;
+            padding: 100px 50px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-width: 1800px; /* High-res publication width */
+        }
+
+        .pipeline-container {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0px;
+        }
+
+        /* Block Base Style */
+        .block {
+            border: 2px solid;
+            border-radius: 16px;
+            padding: 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.04);
+            background: white;
+            position: relative;
+            z-index: 2;
+            transition: transform 0.2s ease;
+        }
+
+        .block-header {
+            font-weight: 800;
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .layer-box {
+            background: rgba(255, 255, 255, 0.7);
+            border-radius: 8px;
+            padding: 10px 14px;
+            border: 1px solid rgba(0,0,0,0.06);
+            font-size: 0.75rem;
+            line-height: 1.4;
+        }
+
+        .tensor-label {
+            font-family: 'Roboto Mono', monospace;
+            font-size: 0.7rem;
+            font-weight: 600;
+            color: var(--text-sub);
+            text-align: center;
+            margin-top: 8px;
+        }
+
+        /* Widths and Colors */
+        .input-node { width: 200px; background: var(--input-gray); border-color: #dadce0; }
+        .backbone-node { width: 280px; background: var(--backbone-blue); border-color: var(--backbone-border); }
+        .router-node { width: 160px; background: var(--router-yellow); border-color: var(--router-border); justify-content: center;}
+        .decoder-node { width: 320px; background: var(--decoder-teal); border-color: var(--decoder-border); }
+        .output-node { width: 220px; background: var(--output-green); border-color: var(--output-border); }
+
+        /* Experts Layout */
+        .expert-stack {
+            display: flex;
+            flex-direction: column;
+            gap: 25px;
+            margin: 0 60px; /* Spacious horizontal gap */
+        }
+        .expert-card {
+            width: 240px;
+            background: var(--expert-orange);
+            border: 2px solid var(--expert-border);
+            border-radius: 12px;
+            padding: 15px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.03);
+        }
+
+        /* SVG Wiring */
+        .svg-connector {
+            width: 80px;
+            height: 400px;
+            margin: 0 -10px;
+            overflow: visible;
+        }
+
+        /* Straight Connectors */
+        .h-line {
+            width: 80px;
+            height: 2px;
+            background: var(--line-color);
+            position: relative;
+        }
+        .h-line::after {
+            content: '';
+            position: absolute;
+            right: -2px;
+            top: -4px;
+            border-top: 5px solid transparent;
+            border-bottom: 5px solid transparent;
+            border-left: 8px solid var(--line-color);
+        }
+
+        .badge {
+            font-size: 0.65rem;
+            padding: 3px 8px;
+            border-radius: 50px;
+            font-weight: 700;
+            background: white;
+            border: 1px solid;
+        }
+
+        .footer-metrics {
+            margin-top: 80px;
+            width: 100%;
+            max-width: 1200px;
+            display: grid;
+            grid-template-columns: 1fr 1.5fr 1fr;
+            gap: 50px;
+            padding-top: 40px;
+            border-top: 1px solid #eee;
+        }
+    </style>
+</head>
+<body>
+
+    <div style="text-align: center; margin-bottom: 60px;">
+        <h1 style="font-weight: 800; font-size: 2rem; margin: 0;">Degradation-Aware Speech Enhancement</h1>
+        <p style="color: var(--text-sub); font-size: 1.1rem;">Residual Expert Networks with Wav2Vec2 Feature Backbone</p>
+    </div>
+
+    <div class="pipeline-container">
+        
+        <div class="block input-node">
+            <div class="block-header">Input</div>
+            <div class="layer-box">
+                <b>Degraded Waveform</b><br>16 kHz Sample Rate
+            </div>
+            <div class="layer-box">
+                <b>Degradation Label</b><br>Discrete ID (0, 1, 2)
+            </div>
+            <div class="tensor-label">(B, T)</div>
+        </div>
+
+        <div class="h-line"></div>
+
+        <div class="block backbone-node">
+            <div class="block-header">
+                Feature Extractor
+                <span class="badge" style="color: #d93025;">Frozen</span>
+            </div>
+            <div class="layer-box">
+                <b>Wav2Vec2 CNN</b><br>7 Blocks | Stride 320
+            </div>
+            <div class="layer-box" style="border: 1.5px solid var(--backbone-border);">
+                <b>Transformer Encoder</b><br>12 Layers (Top-4 Trained)
+            </div>
+            <div class="tensor-label">(B, T/320, 768)</div>
+        </div>
+
+        <div class="h-line"></div>
+
+        <div class="block router-node">
+            <div class="block-header" style="justify-content: center;">Hard Router</div>
+            <div class="layer-box" style="text-align: center; border:none; background: transparent;">
+                Routing based on<br><b>Degradation ID</b>
+            </div>
+        </div>
+
+        <svg class="svg-connector" viewBox="0 0 80 400">
+            <path d="M 0 200 L 40 200 L 40 60 L 80 60" fill="none" stroke="#bdc1c6" stroke-width="2" />
+            <path d="M 40 200 L 80 200" fill="none" stroke="#bdc1c6" stroke-width="2" />
+            <path d="M 40 200 L 40 340 L 80 340" fill="none" stroke="#bdc1c6" stroke-width="2" />
+            <polygon points="80,60 72,56 72,64" fill="#bdc1c6" />
+            <polygon points="80,200 72,196 72,204" fill="#bdc1c6" />
+            <polygon points="80,340 72,336 72,344" fill="#bdc1c6" />
+        </svg>
+
+        <div class="expert-stack">
+            <div class="expert-card" style="border-left: 10px solid #4285f4;">
+                <div class="block-header" style="color:#1a73e8;">Noise Expert</div>
+                <div class="layer-box">Linear(768) → 4x ResBlocks</div>
+                <div class="tensor-label">(B_i, T', 768)</div>
+            </div>
+            <div class="expert-card" style="border-left: 10px solid #34a853;">
+                <div class="block-header" style="color:#1e8e3e;">Reverb Expert</div>
+                <div class="layer-box">Linear(768) → 4x ResBlocks</div>
+                <div class="tensor-label">(B_j, T', 768)</div>
+            </div>
+            <div class="expert-card" style="border-left: 10px solid #f9ab00;">
+                <div class="block-header" style="color:#e8710a;">Device Expert</div>
+                <div class="layer-box">Linear(768) → 4x ResBlocks</div>
+                <div class="tensor-label">(B_k, T', 768)</div>
+            </div>
+        </div>
+
+        <svg class="svg-connector" viewBox="0 0 80 400">
+            <path d="M 0 60 L 40 60 L 40 200 L 80 200" fill="none" stroke="#bdc1c6" stroke-width="2" />
+            <path d="M 0 200 L 80 200" fill="none" stroke="#bdc1c6" stroke-width="2" />
+            <path d="M 0 340 L 40 340 L 40 200" fill="none" stroke="#bdc1c6" stroke-width="2" />
+            <polygon points="80,200 72,196 72,204" fill="#bdc1c6" />
+        </svg>
+
+        <div class="block decoder-node">
+            <div class="block-header">Waveform Decoder</div>
+            <div class="layer-box">
+                <b>ResNet Refinement</b><br>2x Blocks (512 Channels)
+            </div>
+            <div class="layer-box">
+                <b>8-Stage ConvTranspose</b><br>Scaling Factor: 256x Total
+            </div>
+            <div class="tensor-label">(B, T_aligned, 1)</div>
+        </div>
+
+        <div class="h-line"></div>
+
+        <div class="block output-node">
+            <div class="block-header">Enhanced Clean</div>
+            <div class="layer-box" style="text-align: center;">
+                <b>Bilinear Alignment</b><br>+ Tanh Activation
+            </div>
+            <div class="tensor-label" style="color: #1e8e3e;">(B, T) Waveform</div>
+        </div>
+
+    </div>
+
+    <div class="footer-metrics">
+        <div>
+            <h4 style="margin:0 0 10px 0; color: var(--text-sub);">Training Stages</h4>
+            <div style="font-size: 0.8rem; line-height: 1.6;">
+                <b>Stage 1:</b> Experts + Decoder (3e-4)<br>
+                <b>Stage 2:</b> Top-4 Backbone (5e-5)
+            </div>
+        </div>
+        <div style="text-align: center;">
+            <h4 style="margin:0 0 10px 0; color: var(--text-sub);">Objective Function</h4>
+            <div style="font-family: monospace; font-size: 0.95rem; background: #f8f9fa; padding: 10px; border-radius: 8px;">
+                0.5 L<sub>L1</sub> + 1.0 L<sub>MR-STFT</sub> + 0.5 L<sub>SI-SNR</sub>
+            </div>
+        </div>
+        <div style="text-align: right;">
+            <h4 style="margin:0 0 10px 0; color: var(--text-sub);">Optimization</h4>
+            <div style="font-size: 0.8rem; line-height: 1.6;">
+                AdamW | Weight Decay 1e-4<br>
+                Mixed Precision (FP16)
+            </div>
+        </div>
+    </div>
+
+</body>
+</html>
