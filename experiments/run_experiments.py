@@ -4,25 +4,13 @@ run_experiments.py
 Entry point for training and evaluation.
 
 Usage:
-    # Train with default config
-    python experiments/run_experiments.py
-
-    # Train with custom config
+    python experiments/run_experiments.py                          # train
     python experiments/run_experiments.py --config configs/config.yaml
-
-    # Evaluate best checkpoint on test set
-    python experiments/run_experiments.py --eval --checkpoint outputs/experiment_01/checkpoints/best_stage2.pt
-
-    # Override specific config keys from CLI
-    python experiments/run_experiments.py --set batch_size=4 stage1_epochs=5
+    python experiments/run_experiments.py --eval --checkpoint outputs/experiment_02/checkpoints/best_stage2.pt
+    python experiments/run_experiments.py --set batch_size=4 stage1_epochs=10
 """
 
-import sys
-import os
-import argparse
-import json
-
-# Allow imports from project root
+import sys, os, argparse, json
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import torch
@@ -35,125 +23,134 @@ from utils.metrics   import evaluate_batch
 
 
 # ------------------------------------------------------------------
-# CLI
-# ------------------------------------------------------------------
 def parse_args():
-    p = argparse.ArgumentParser(description="Degradation-Aware Speech Enhancement")
-    p.add_argument("--config",     type=str, default="configs/config.yaml",
-                   help="Path to YAML config file")
-    p.add_argument("--eval",       action="store_true",
-                   help="Run evaluation only (no training)")
-    p.add_argument("--checkpoint", type=str, default=None,
-                   help="Checkpoint path for --eval mode")
-    p.add_argument("--set", nargs="*", default=[],
-                   help="Override config keys: key=value ...")
+    p = argparse.ArgumentParser()
+    p.add_argument("--config",     default="configs/config.yaml")
+    p.add_argument("--eval",       action="store_true")
+    p.add_argument("--checkpoint", default=None)
+    p.add_argument("--set", nargs="*", default=[])
     return p.parse_args()
 
 
-def load_config(path: str) -> dict:
+def load_config(path):
     if not os.path.exists(path):
         print(f"[run] Config not found at {path}, using defaults.")
         return {}
     with open(path) as f:
-        cfg = yaml.safe_load(f)
-    return cfg or {}
+        return yaml.safe_load(f) or {}
 
 
-def apply_overrides(cfg: dict, overrides: list) -> dict:
+def apply_overrides(cfg, overrides):
     for kv in overrides:
         k, v = kv.split("=", 1)
-        # Auto-cast
-        try:    v = int(v)
-        except ValueError:
-            try:    v = float(v)
-            except ValueError:
-                if v.lower() == "true":  v = True
-                elif v.lower() == "false": v = False
-                elif v.lower() == "null":  v = None
+        for cast in (int, float):
+            try: v = cast(v); break
+            except ValueError: pass
+        if v == "true":  v = True
+        if v == "false": v = False
+        if v == "null":  v = None
         cfg[k] = v
         print(f"[run] Override: {k} = {v}")
     return cfg
 
 
 # ------------------------------------------------------------------
-# Train
-# ------------------------------------------------------------------
-def run_training(cfg: dict):
+def run_training(cfg):
     trainer = Trainer(cfg)
     trainer.train()
-
-    # Final test-set evaluation after training
-    print("\n[run] Running final test-set evaluation...")
-    run_eval(cfg, checkpoint=str(
-        trainer.ckpt_dir / "best_stage2.pt"
-    ))
+    print("\n[run] Running final test-set evaluation on best_stage2...")
+    best = str(trainer.ckpt_dir / "best_stage2.pt")
+    if not os.path.exists(best):
+        best = str(trainer.ckpt_dir / "latest_stage2.pt")
+    run_eval(cfg, checkpoint=best)
 
 
 # ------------------------------------------------------------------
-# Eval
-# ------------------------------------------------------------------
-def run_eval(cfg: dict, checkpoint: str = None):
+def run_eval(cfg, checkpoint=None):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     model = DegradationAwareSpeechEnhancer(
-        expert_dim        = cfg.get("expert_dim",        512),
-        num_expert_blocks = cfg.get("num_expert_blocks", 4),
-        decoder_dim       = cfg.get("decoder_dim",       512),
+        expert_dim        = cfg.get("expert_dim",        256),  # v3 defaults
+        num_expert_blocks = cfg.get("num_expert_blocks", 3),
+        decoder_dim       = cfg.get("decoder_dim",       256),
         num_upsample      = cfg.get("num_upsample",      8),
-        dropout           = cfg.get("dropout",           0.1),
+        dropout           = cfg.get("dropout",           0.05),
     ).to(device)
 
     if checkpoint and os.path.exists(checkpoint):
         ckpt = torch.load(checkpoint, map_location=device)
-        model.load_state_dict(ckpt["model_state"])
-        print(f"[run] Loaded checkpoint: {checkpoint}")
+        model.load_state_dict(ckpt["model_state"], strict=False)
+        print(f"[run] Loaded: {checkpoint}")
     else:
-        print("[run] WARNING: No checkpoint loaded — evaluating random weights.")
+        print("[run] WARNING: checkpoint not found — random weights.")
 
     _, _, test_loader = build_dataloaders(
-        data_root  = cfg.get("data_root", "data/final_processed"),
-        batch_size = cfg.get("batch_size", 8),
-        num_workers= cfg.get("num_workers", 4),
+        data_root   = cfg.get("data_root", "data/final_processed"),
+        batch_size  = cfg.get("batch_size", 8),
+        num_workers = cfg.get("num_workers", 0),
     )
 
-    print("[run] Evaluating on test set (SI-SDR + STOI)...")
+    print("[run] Evaluating on test set...")
     results = evaluate_batch(
-        model,
-        test_loader,
-        device,
-        compute_pesq = False,   # set True if pesq is installed
-        compute_stoi = True,
+        model, test_loader, device,
+        compute_pesq      = False,
+        compute_stoi      = True,
+        compute_composite = True,
+        compute_lsd       = True,
     )
 
-    print("\n" + "="*50)
+    # ── Pretty print ─────────────────────────────────────────────
+    W = 65
+    print("\n" + "="*W)
     print("  TEST SET RESULTS")
-    print("="*50)
-    print(f"  SI-SDR  : {results['si_sdr_mean']:.2f} dB")
-    print(f"  STOI    : {results['stoi_mean']:.4f}")
-    print(f"  PESQ    : {results['pesq_mean']:.4f}")
-    print()
-    for name, vals in results["per_type"].items():
-        print(f"  [{name:>6}]  SI-SDR={vals['si_sdr']:.2f}  "
-              f"STOI={vals['stoi']:.4f}  PESQ={vals['pesq']:.4f}")
-    print("="*50)
+    print("="*W)
 
-    # Save results JSON
-    out_dir = cfg.get("output_dir", "outputs")
+    print(f"\n  ── Spectral & SDR ──────────────────────────────────")
+    print(f"  SI-SDR  (model)    : {results['si_sdr_mean']:>8.2f} dB")
+    print(f"  SI-SDR  (baseline) : {results['si_sdr_baseline_mean']:>8.2f} dB  ← degraded input")
+    print(f"  SI-SDR  (improve)  : {results['si_sdr_improvement']:>+8.2f} dB")
+    print(f"  LSD                : {results['lsd_mean']:>8.2f} dB  (lower better)")
+
+    print(f"\n  ── Perceptual Quality (MOS 1–5) ────────────────────")
+    print(f"  CSIG (signal qual) : {results['csig_mean']:>8.3f}")
+    print(f"  CBAK (bg suppress) : {results['cbak_mean']:>8.3f}")
+    print(f"  COVL (overall)     : {results['covl_mean']:>8.3f}")
+
+    print(f"\n  ── Intelligibility ─────────────────────────────────")
+    print(f"  STOI               : {results['stoi_mean']:>8.4f}  (higher better)")
+    print(f"  PESQ               : {results['pesq_mean']:>8.4f}")
+
+    print(f"\n  ── Efficiency ──────────────────────────────────────")
+    print(f"  RTF                : {results['rtf_mean']:>8.4f}  (<1 = real-time)")
+    print(f"  Expert utilization :")
+    for name, frac in results["expert_utilization"].items():
+        bar = "█" * int(frac * 20)
+        print(f"    {name:<8} {frac*100:5.1f}%  {bar}")
+
+    print(f"\n  ── Per Degradation Type ────────────────────────────")
+    hdr = f"  {'Type':<8}  {'SI-SDR':>7}  {'Improve':>8}  {'LSD':>6}  {'CSIG':>6}  {'CBAK':>6}  {'COVL':>6}  {'STOI':>6}"
+    print(hdr)
+    print("  " + "-" * (len(hdr) - 2))
+    for name, v in results["per_type"].items():
+        print(f"  {name:<8}  {v['si_sdr']:>7.2f}  {v['si_sdr_improvement']:>+8.2f}"
+              f"  {v['lsd']:>6.2f}  {v['csig']:>6.3f}  {v['cbak']:>6.3f}"
+              f"  {v['covl']:>6.3f}  {v['stoi']:>6.4f}")
+    print("="*W)
+
+    # Save
+    out_dir = cfg.get("output_dir", "outputs/experiment_02")
     os.makedirs(out_dir, exist_ok=True)
     result_path = os.path.join(out_dir, "test_results.json")
     with open(result_path, "w") as f:
-        json.dump(results, f, indent=2)
-    print(f"\n[run] Results saved to {result_path}")
+        json.dump(results, f, indent=2, default=str)
+    print(f"\n[run] Results saved → {result_path}")
 
 
-# ------------------------------------------------------------------
-# Main
 # ------------------------------------------------------------------
 if __name__ == "__main__":
     args = parse_args()
     cfg  = load_config(args.config)
     cfg  = apply_overrides(cfg, args.set)
-
     if args.eval:
         run_eval(cfg, checkpoint=args.checkpoint)
     else:

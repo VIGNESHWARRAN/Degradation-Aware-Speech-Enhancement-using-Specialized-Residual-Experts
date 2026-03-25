@@ -1,100 +1,97 @@
 """
-backbone.py
------------
-Wraps facebook/wav2vec2-base as a frozen / partially-unfrozen feature encoder.
+backbone.py — v4
+----------------
+CRITICAL FIX: Expose intermediate CNN feature extractor layers
+for U-Net skip connections to the decoder.
 
-wav2vec2-base architecture:
-    - Feature Extractor  : 7-layer CNN  → produces frame-level features (512-d)
-    - Transformer        : 12 encoder layers → contextual features (768-d)
+wav2vec2-base CNN extractor has 7 conv layers producing features at
+progressively smaller time resolutions. We expose 3 of these as skip
+connections so the decoder can recover fine-grained temporal structure
+that is lost in the transformer's semantic compression.
 
-We expose:
-    - encode(waveform)  → (B, T', 768) hidden states from the last transformer layer
-    - freeze() / unfreeze_top_n(n) for staged training
+Skip connection outputs (channels, approx stride from input):
+    skip_0: (512, ×2)   — layer 1 output
+    skip_1: (512, ×4)   — layer 3 output  
+    skip_2: (512, ×8)   — layer 5 output
+    main:   (768, ×320) — transformer output (contextual features)
 """
 
 import torch
 import torch.nn as nn
 from transformers import Wav2Vec2Model
 
-
 BACKBONE_NAME = "facebook/wav2vec2-base"
-HIDDEN_DIM    = 768   # output dim of wav2vec2-base transformer
+HIDDEN_DIM    = 768
+CNN_DIM       = 512   # wav2vec2 CNN feature dimension
 
 
 class Wav2Vec2Backbone(nn.Module):
-    """
-    Wav2Vec2 encoder wrapper.
-
-    Args:
-        pretrained_name : HuggingFace model identifier
-        freeze_feature_extractor : always freeze the CNN feature extractor
-                                   (standard practice — it's a fixed spectrogram front-end)
-    """
-
     def __init__(self, pretrained_name: str = BACKBONE_NAME,
                  freeze_feature_extractor: bool = True):
         super().__init__()
         self.model = Wav2Vec2Model.from_pretrained(pretrained_name)
         self.hidden_dim = HIDDEN_DIM
+        self.cnn_dim    = CNN_DIM
 
-        # Always freeze the CNN feature extractor
         if freeze_feature_extractor:
             self.model.feature_extractor._freeze_parameters()
 
-    # ------------------------------------------------------------------
-    def forward(self, waveform: torch.Tensor) -> torch.Tensor:
+    def forward(self, waveform: torch.Tensor):
         """
         Args:
-            waveform : (B, T)  raw waveform at 16 kHz, values in [-1, 1]
+            waveform: (B, T) at 16kHz
 
         Returns:
-            hidden   : (B, T', 768)  contextual features
-                       T' ≈ T / 320  (wav2vec2 stride is ~20 ms at 16 kHz)
+            main_features : (B, T', 768)  transformer contextual features
+            skip_features : list of 3 tensors (B, 512, T_i) CNN intermediate features
+                           in channels-first format for direct use in decoder
         """
-        outputs = self.model(input_values=waveform, output_hidden_states=False)
-        return outputs.last_hidden_state   # (B, T', 768)
+        # ── Extract CNN intermediate features via hooks ──────────────
+        skip_features = []
+        hooks = []
 
-    # ------------------------------------------------------------------
+        # Tap layers 1, 3, 5 of the 7-layer CNN extractor
+        tap_layers = [1, 3, 5]
+
+        def make_hook(idx):
+            def hook(module, input, output):
+                # output shape: (B, C, T_i)
+                skip_features.append(output.detach() if not self.training else output)
+            return hook
+
+        cnn_layers = self.model.feature_extractor.conv_layers
+        for i in tap_layers:
+            hooks.append(cnn_layers[i].register_forward_hook(make_hook(i)))
+
+        # Forward pass
+        outputs = self.model(input_values=waveform, output_hidden_states=False)
+        main_features = outputs.last_hidden_state  # (B, T', 768)
+
+        # Remove hooks
+        for h in hooks:
+            h.remove()
+
+        return main_features, skip_features   # skip_features: list of 3 (B, 512, T_i)
+
     def freeze_all(self):
-        """Freeze entire backbone (Stage 1)."""
         for p in self.model.parameters():
             p.requires_grad = False
-        # CNN extractor is always frozen
         self.model.feature_extractor._freeze_parameters()
         print("[Backbone] All parameters frozen.")
 
-    # ------------------------------------------------------------------
     def unfreeze_top_n_transformer_layers(self, n: int = 4):
-        """
-        Unfreeze the top-N transformer encoder layers (Stage 2).
-        CNN feature extractor remains frozen.
-
-        Args:
-            n : number of top transformer layers to unfreeze (max 12 for wav2vec2-base)
-        """
-        # First freeze everything
         self.freeze_all()
-
         layers = self.model.encoder.layers
         total  = len(layers)
-        unfreeze_from = max(0, total - n)
-
-        for layer in layers[unfreeze_from:]:
+        for layer in layers[max(0, total-n):]:
             for p in layer.parameters():
                 p.requires_grad = True
-
-        # Also unfreeze the final layer norm
         for p in self.model.encoder.layer_norm.parameters():
             p.requires_grad = True
-
         trainable = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         print(f"[Backbone] Unfroze top {n}/{total} transformer layers. "
-              f"Trainable backbone params: {trainable:,}")
+              f"Trainable: {trainable:,}")
 
-    # ------------------------------------------------------------------
     def unfreeze_all(self):
-        """Fully unfreeze transformer (CNN extractor stays frozen)."""
         for p in self.model.encoder.parameters():
             p.requires_grad = True
-        trainable = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
-        print(f"[Backbone] Fully unfrozen transformer. Trainable: {trainable:,}")
